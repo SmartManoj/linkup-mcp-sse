@@ -4,9 +4,17 @@ import logging
 import mcp.server.stdio
 import mcp.types as types
 from linkup import LinkupClient
-from mcp.server import NotificationOptions, Server
-from mcp.server.models import InitializationOptions
+from mcp.server import Server
+from starlette.routing import Route, Mount
+from starlette.requests import Request
+from starlette.applications import Starlette
+from mcp.server.sse import SseServerTransport
+from starlette.responses import Response
+from dotenv import load_dotenv
 
+load_dotenv()
+
+import uvicorn
 server = Server("mcp-search-linkup")
 logger = logging.getLogger("mcp-search-linkup")
 logger.setLevel(logging.INFO)
@@ -83,23 +91,43 @@ async def handle_call_tool(
         )
     ]
 
+def create_starlette_app(mcp_server: Server, *, debug: bool = False) -> Starlette:
+    """Create a Starlette application that can server the provied mcp server with SSE."""
+    sse = SseServerTransport("/messages/")
 
-async def main() -> None:
-    """Run the server using stdin/stdout streams."""
-    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            InitializationOptions(
-                server_name="mcp-search-linkup",
-                server_version="0.1.0",
-                capabilities=server.get_capabilities(
-                    notification_options=NotificationOptions(),
-                    experimental_capabilities={},
-                ),
-            ),
-        )
+    async def handle_sse(request: Request) -> Response:
+        async with sse.connect_sse(
+                request.scope,
+                request.receive,
+                request._send,  # noqa: SLF001
+        ) as (read_stream, write_stream):
+            await mcp_server.run(
+                read_stream,
+                write_stream,
+                mcp_server.create_initialization_options(),
+            )
+        return Response()
+
+    return Starlette(
+        debug=debug,
+        routes=[
+            Route("/sse", endpoint=handle_sse),
+            Mount("/messages/", app=sse.handle_post_message),
+        ],
+    )
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    mcp_server = server
+
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Run MCP SSE-based server')
+    parser.add_argument('--host', default='0.0.0.0', help='Host to bind to')
+    parser.add_argument('--port', type=int, default=8080, help='Port to listen on')
+    args = parser.parse_args()
+
+    # Bind SSE request handling to MCP server
+    starlette_app = create_starlette_app(mcp_server, debug=True)
+
+    uvicorn.run(starlette_app, host=args.host, port=args.port)
