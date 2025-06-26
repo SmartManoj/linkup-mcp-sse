@@ -40,9 +40,9 @@ class MCPClient:
 
     async def cleanup(self):
         """Properly clean up the session and streams"""
-        if self._session_context:
+        if hasattr(self, '_session_context') and self._session_context:
             await self._session_context.__aexit__(None, None, None)
-        if self._streams_context:
+        if hasattr(self, '_streams_context') and self._streams_context:
             await self._streams_context.__aexit__(None, None, None)
 
     async def process_query(self, query: str) -> str:
